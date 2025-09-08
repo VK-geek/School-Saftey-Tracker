@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Child Safety Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style> body { font-family: 'Inter', sans-serif; } </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-900 text-white p-4 md:p-8">
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-8">
+            <h1 class="text-3xl font-bold text-cyan-400">Child Safety Dashboard & Management</h1>
+        </header>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <div class="lg:col-span-2 flex flex-col gap-8">
+                <!-- Map -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                    <h2 class="text-xl font-bold mb-4">School Layout</h2>
+                    <div class="aspect-video bg-gray-700 rounded-md">
+                         <canvas id="mapCanvas" class="w-full h-full"></canvas>
+                    </div>
+                </div>
+                <!-- Live Status & Alert Log -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                    <h2 class="text-xl font-bold mb-4">Live Status & Alert Log</h2>
+                    <div id="status-feed" class="h-48 bg-gray-700 rounded-md p-3 text-sm overflow-y-auto">
+                        <p class="text-gray-500">Connecting to server...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="flex flex-col gap-6">
+                <!-- Management Panels -->
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                    <h2 class="text-xl font-bold mb-4">Manage Students</h2>
+                    <div class="flex gap-2 mb-4">
+                        <input type="text" id="student-name-input" placeholder="New Student ID" class="flex-grow bg-gray-700 rounded p-2 focus:outline-none focus:ring-2 focus:ring-cyan-500">
+                        <button onclick="addDevice('student')" class="bg-cyan-600 hover:bg-cyan-700 font-bold p-2 rounded-md">Add</button>
+                    </div>
+                    <ul id="student-list" class="space-y-2"></ul>
+                </div>
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                    <h2 class="text-xl font-bold mb-4">Manage Classrooms</h2>
+                    <div class="flex gap-2 mb-4">
+                        <input type="text" id="classroom-name-input" placeholder="New Classroom ID" class="flex-grow bg-gray-700 rounded p-2 focus:outline-none focus:ring-2 focus:ring-green-500">
+                        <button onclick="addDevice('classroom')" class="bg-green-600 hover:bg-green-700 font-bold p-2 rounded-md">Add</button>
+                    </div>
+                    <ul id="classroom-list" class="space-y-2"></ul>
+                </div>
+                <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                    <h2 class="text-xl font-bold mb-4">Manage Danger Zones</h2>
+                    <div class="flex gap-2 mb-4">
+                        <input type="text" id="danger-name-input" placeholder="New Danger Zone ID" class="flex-grow bg-gray-700 rounded p-2 focus:outline-none focus:ring-2 focus:ring-red-500">
+                        <button onclick="addDevice('danger')" class="bg-red-600 hover:bg-red-700 font-bold p-2 rounded-md">Add</button>
+                    </div>
+                    <ul id="danger-list" class="space-y-2"></ul>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE_URL = 'http://127.0.0.1:8000';
+        const WS_URL = 'ws://127.0.0.1:8000/ws';
+        const canvas = document.getElementById('mapCanvas');
+        const ctx = canvas.getContext('2d');
+        const MAX_DISTANCE_CM = 1000;
+        const DEFAULT_BEACONS = ["CLASSROOM-101", "DANGER-101"];
+        
+        // Pre-defined locations for beacons to appear on the map.
+        // You can add more beacon names and their (x, y) coordinates here.
+        const BEACON_COORDINATES = {
+            "CLASSROOM-101": { x: 0.25, y: 0.30 },
+            "CLASSROOM-102": { x: 0.25, y: 0.70 }, // Example for a second classroom
+            "DANGER-101":    { x: 0.825, y: 0.75 },
+            "DANGER-EXIT-A": { x: 0.825, y: 0.25 }, // Example for a second danger zone
+        };
+        let activeBeacons = []; // This will be populated from the server
+
+        // --- Management Functions ---
+        async function fetchAndRenderLists() {
+            try {
+                const students = await (await fetch(`${API_BASE_URL}/students/`)).json();
+                document.getElementById('student-list').innerHTML = students.map(s => renderListItem(s.name, s.id, 'student')).join('');
+                
+                // Fetch all beacons and update our global list
+                activeBeacons = await (await fetch(`${API_BASE_URL}/beacons/`)).json();
+                document.getElementById('classroom-list').innerHTML = activeBeacons.filter(b => b.type === 'classroom').map(b => renderListItem(b.name, b.id, 'beacon')).join('');
+                document.getElementById('danger-list').innerHTML = activeBeacons.filter(b => b.type === 'danger').map(b => renderListItem(b.name, b.id, 'beacon')).join('');
+                
+                drawMap(); // Redraw the map with the new beacon list
+            } catch(e) { console.error("Could not fetch lists from server.", e); }
+        }
+
+        function renderListItem(name, id, type) {
+            const isDefault = (type === 'beacon' && DEFAULT_BEACONS.includes(name));
+            const deleteButton = isDefault
+                ? `<button class="text-gray-600 cursor-not-allowed font-bold text-lg px-2" disabled title="Default beacons cannot be deleted.">&times;</button>`
+                : `<button onclick="deleteDevice('${type}', ${id})" class="text-gray-400 hover:text-red-500 font-bold text-lg px-2">&times;</button>`;
+            return `<li class="flex justify-between items-center bg-gray-700 p-2 rounded"><span class="text-gray-300">${name}</span>${deleteButton}</li>`;
+        }
+        
+        async function addDevice(type) {
+            let endpoint, body, inputEl;
+            if (type === 'student') { endpoint = '/students/'; inputEl = document.getElementById('student-name-input'); body = { name: inputEl.value };
+            } else { endpoint = '/beacons/'; inputEl = document.getElementById(`${type}-name-input`); body = { name: inputEl.value, type: type }; }
+            if (!body.name) return;
+            try {
+                await fetch(API_BASE_URL + endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                inputEl.value = '';
+                fetchAndRenderLists();
+            } catch(e) { alert('Error: Could not add device. Is the server running?'); }
+        }
+        
+        async function deleteDevice(type, id) {
+             if (!confirm('Are you sure you want to delete this device?')) return;
+             const endpoint = type === 'student' ? `/students/${id}` : `/beacons/${id}`;
+             await fetch(API_BASE_URL + endpoint, { method: 'DELETE' });
+             fetchAndRenderLists();
+        }
+
+        // --- Map & UI Drawing Functions ---
+        function drawMap() {
+            const w = canvas.width; const h = canvas.height;
+            ctx.clearRect(0, 0, w, h);
+            
+            // Dynamically draw all active beacons
+            activeBeacons.forEach(beacon => {
+                const pos = BEACON_COORDINATES[beacon.name];
+                if (!pos) return; 
+
+                const isClassroom = beacon.type === 'classroom';
+                const color = isClassroom ? 'rgb(74, 222, 128)' : 'rgb(239, 68, 68)';
+                const fillColor = isClassroom ? 'rgba(74, 222, 128, 0.2)' : 'rgba(239, 68, 68, 0.2)';
+
+                const rectX = w * pos.x - 50; const rectY = h * pos.y - 40;
+                ctx.fillStyle = fillColor; ctx.strokeStyle = color; ctx.lineWidth = 2;
+                ctx.fillRect(rectX, rectY, 100, 80); ctx.strokeRect(rectX, rectY, 100, 80);
+                
+                ctx.beginPath(); ctx.arc(w * pos.x, h * pos.y, 5, 0, Math.PI * 2);
+                ctx.fillStyle = 'white'; ctx.fill();
+                ctx.font = '12px Inter'; ctx.textAlign = 'center';
+                ctx.fillText(beacon.name, w * pos.x, rectY - 8);
+            });
+        }
+
+        function drawStudent(x, y, childId) {
+            ctx.beginPath(); ctx.arc(x, y, 10, 0, Math.PI * 2);
+            ctx.fillStyle = '#38bdf8'; ctx.fill();
+            ctx.strokeStyle = 'white'; ctx.stroke();
+            ctx.font = '12px Inter'; ctx.textAlign = 'center';
+            ctx.fillText(childId, x, y + 25);
+        }
+
+        function calculatePosition(studentData) {
+            const classBeaconPos = BEACON_COORDINATES[studentData.closestClassroom];
+            const dangerBeaconPos = BEACON_COORDINATES[studentData.closestDanger];
+            
+            if (!classBeaconPos || !dangerBeaconPos || studentData.closestClassroom === 'none' || studentData.closestDanger === 'none') {
+                return null;
+            }
+
+            const classLoc = { x: canvas.width * classBeaconPos.x, y: canvas.height * classBeaconPos.y };
+            const dangerLoc = { x: canvas.width * dangerBeaconPos.x, y: canvas.height * dangerBeaconPos.y };
+            
+            let w1 = 1 - (Math.min(studentData.classroomDist, MAX_DISTANCE_CM) / MAX_DISTANCE_CM);
+            let w2 = 1 - (Math.min(studentData.dangerDist, MAX_DISTANCE_CM) / MAX_DISTANCE_CM);
+            
+            const totalWeight = w1 + w2;
+            if (totalWeight === 0) return null;
+            
+            return { x: (classLoc.x * w1 + dangerLoc.x * w2) / totalWeight, y: (classLoc.y * w1 + dangerLoc.y * w2) / totalWeight };
+        }
+
+        function getWifiColor(rssi) {
+            if (rssi > -67) return 'text-green-400';
+            if (rssi > -80) return 'text-yellow-400';
+            return 'text-red-400';
+        }
+
+        function updateUIWithData(data) {
+            drawMap();
+            const feed = document.getElementById('status-feed');
+            feed.innerHTML = '';
+
+            if (Object.keys(data).length === 0) {
+                feed.innerHTML = '<p class="text-gray-500">Connected. Awaiting data...</p>';
+                return;
+            }
+
+            Object.values(data).forEach(student => {
+                const pos = calculatePosition(student);
+                if (pos) drawStudent(pos.x, pos.y, student.childId);
+                
+                const wifiColor = getWifiColor(student.wifiRssi);
+                let statusMessage = `
+                    <div class="border-b border-gray-700 pb-2 mb-2">
+                        <p class="font-bold text-white ${student.alert ? 'text-red-400 animate-pulse' : ''}">${student.childId}</p>
+                        <p>Closest Class: <span class="text-gray-400">${student.closestClassroom} (${student.classroomDist.toFixed(0)} cm)</span></p>
+                        <p>Closest Danger: <span class="text-gray-400">${student.closestDanger} (${student.dangerDist.toFixed(0)} cm)</span></p>
+                        <p>Wi-Fi Signal: <span class="${wifiColor}">${student.wifiRssi} dBm</span></p>
+                    </div>`;
+                feed.innerHTML += statusMessage;
+            });
+        }
+
+        function connectWebSocket() {
+            const socket = new WebSocket(WS_URL);
+            socket.onopen = () => { document.getElementById('status-feed').innerHTML = '<p class="text-green-400">Connected to server...</p>'; };
+            socket.onmessage = (event) => updateUIWithData(JSON.parse(event.data));
+            socket.onclose = () => {
+                document.getElementById('status-feed').innerHTML = '<p class="text-red-400">Connection lost. Retrying...</p>';
+                setTimeout(connectWebSocket, 3000);
+            };
+        }
+        
+        function resizeCanvasToContainer() {
+            const canvasContainer = canvas.parentElement;
+            canvas.width = canvasContainer.clientWidth;
+            canvas.height = canvasContainer.clientHeight;
+            drawMap();
+        }
+
+        window.onload = async () => {
+            resizeCanvasToContainer();
+            await fetchAndRenderLists(); // This will now fetch beacons and draw the initial map
+            connectWebSocket();
+        };
+
+        window.onresize = resizeCanvasToContainer;
+    </script>
+</body>
+</html>
+
